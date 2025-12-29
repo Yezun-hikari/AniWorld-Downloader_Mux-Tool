@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anime-muxer"
+version = "0.1.0"
+authors = [
+    { name="Your Name", email="you@example.com" },
+]
+description = "A professional Python library to mux different anime versions into a single MKV file."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "click",
+    "rich",
+    "subliminal",
+    "ffsubsync",
+]
+
+[project.scripts]
+anime-muxer = "anime_muxer.cli:main"
