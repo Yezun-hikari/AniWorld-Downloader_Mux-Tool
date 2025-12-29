@@ -45,33 +45,13 @@ def find_episode_files(directory: Path) -> Dict[str, List[Path]]:
     return episode_files
 
 
-class Muxer:
-    def __init__(self, base_dir: Path):
-        self.base_dir = base_dir.resolve()
-        self.docker_image = "mkvtoolnix/mkvtoolnix"
-        self._check_docker_image()
+DOCKER_CONTAINER = os.getenv("ANIMUX_CONTAINER", "mkvtoolnix")
 
-    def _check_docker_image(self):
-        """Ensures the mkvtoolnix Docker image is available."""
-        try:
-            subprocess.run(
-                ["docker", "image", "inspect", self.docker_image],
-                check=True,
-                capture_output=True,
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            console.print(f"Docker image [yellow]{self.docker_image}[/yellow] not found.")
-            console.print("Attempting to pull it now...")
-            try:
-                subprocess.run(
-                    ["docker", "pull", self.docker_image],
-                    check=True,
-                )
-                console.print(f"Successfully pulled [green]{self.docker_image}[/green].")
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                console.print(f"[bold red]Error:[/bold red] Failed to pull Docker image. Is Docker installed and running?")
-                console.print(f"Details: {e}")
-                exit(1)
+
+class Muxer:
+    def __init__(self, base_dir: Path, container_name: str = DOCKER_CONTAINER):
+        self.base_dir = base_dir.resolve()
+        self.container_name = container_name
 
     def mux_episode(self, base_name: str, files: List[Path]) -> Optional[Path]:
         """Muxes a group of files for a single episode into an MKV file."""
@@ -97,9 +77,7 @@ class Muxer:
             )
 
         command = [
-            "docker", "run", "--rm",
-            "-v", f"{self.base_dir}:/storage",
-            self.docker_image,
+            "docker", "exec", self.container_name,
             "mkvmerge", "-o", container_output_path,
         ]
 
@@ -155,9 +133,7 @@ class Muxer:
             ref_video_container = f"/storage/{reference_video_file.relative_to(self.base_dir)}"
 
             audio_mux_command = [
-                "docker", "run", "--rm",
-                "-v", f"{self.base_dir}:/storage",
-                self.docker_image,
+                "docker", "exec", self.container_name,
                 "mkvmerge", "-o", temp_audio_mux_container,
                 ref_video_container
             ]
