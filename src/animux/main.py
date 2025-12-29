@@ -3,7 +3,13 @@ from typing import List
 
 import click
 from rich.console import Console
-from rich.progress import Progress
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 from .core import DOCKER_CONTAINER, Muxer, cleanup_source_files, find_episode_files
 from .utils import format_bytes
@@ -46,20 +52,28 @@ def cli(directory: Path, container_name: str, yes: bool):
         console.print("[yellow]No episode files found matching the expected format.[/yellow]")
         return
 
+    console.print(f"Found {len(episode_groups)} episode groups to mux.")
+
     muxer = Muxer(base_dir=directory, container_name=container_name)
     total_source_size = 0
     total_muxed_size = 0
     all_source_files: List[Path] = []
 
-    with Progress() as progress:
-        task = progress.add_task("[cyan]Muxing...", total=len(episode_groups))
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task("Muxing...", total=len(episode_groups))
 
         for base_name, files in episode_groups.items():
+            progress.update(task, description=f"Muxing [yellow]{base_name}[/yellow]")
             source_size = sum(f.stat().st_size for f in files)
             total_source_size += source_size
             all_source_files.extend(files)
 
-            progress.update(task, description=f"Muxing [yellow]{base_name}[/yellow]")
             muxed_file = muxer.mux_episode(base_name, files)
 
             if muxed_file and muxed_file.exists():

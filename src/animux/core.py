@@ -10,6 +10,7 @@ from rich.console import Console
 
 import ffsubsync
 import subliminal
+from babelfish import Language
 from subliminal.video import Video
 
 console = Console()
@@ -21,25 +22,22 @@ LANGUAGE_MAPPING = {
     "English Sub": ("jpn", "Japanese"),
 }
 
-SUBTITLE_LANGUAGE_MAPPING = {
-    "German Sub": "ger",
-    "English Sub": "eng",
-}
-
-
 def find_episode_files(directory: Path) -> Dict[str, List[Path]]:
     """
     Scans the directory for episode files and groups them by episode name.
     e.g., {'Anime Name - 01': [Path(...), Path(...)], ...}
     """
-    console.print(f"Scanning for episode files in [cyan]{directory}[/cyan]...")
     episode_files = defaultdict(list)
-    file_pattern = re.compile(r"^(.*) - \((German Dub|German Sub|English Dub|English Sub)\)\.mp4$")
+    suffixes = [
+        " - (German Dub).mp4",
+        " - (German Sub).mp4",
+        " - (English Dub).mp4",
+        " - (English Sub).mp4",
+    ]
 
-    for file in directory.rglob("*.mp4"):
-        match = file_pattern.match(file.name)
-        if match:
-            base_name = match.group(1)
+    for suffix in suffixes:
+        for file in directory.rglob(f"*{suffix}"):
+            base_name = file.name[: -len(suffix)]
             episode_files[base_name].append(file)
 
     return episode_files
@@ -60,21 +58,9 @@ class Muxer:
 
         # Determine if subtitles are needed
         has_sub_version = any("Sub" in f.name for f in files)
-        subtitle_lang_code = None
-        if has_sub_version:
-            for file in files:
-                file_type = self._get_file_type(file.name)
-                if "Sub" in file_type:
-                    subtitle_lang_code = SUBTITLE_LANGUAGE_MAPPING.get(file_type)
-                    break
-
         synced_subtitle_file = None
-        if has_sub_version and subtitle_lang_code:
-            synced_subtitle_file = self._prepare_subtitles(
-                base_name,
-                files[0],
-                subtitle_lang_code
-            )
+        if has_sub_version:
+            synced_subtitle_file = self._prepare_subtitles(base_name, files[0])
 
         command = [
             "docker", "exec", self.container_name,
@@ -94,40 +80,57 @@ class Muxer:
                 ])
 
         if synced_subtitle_file:
-            container_subtitle_path = f"/storage/{synced_subtitle_file.name}"
-            command.extend([
-                "--language", f"0:{subtitle_lang_code}",
-                "--track-name", "0:Subtitles",
-                container_subtitle_path,
-            ])
+            subtitle_path, subtitle_lang = synced_subtitle_file
+            container_subtitle_path = f"/storage/{subtitle_path.name}"
+            command.extend(
+                [
+                    "--language",
+                    f"0:{subtitle_lang.alpha3}",
+                    "--track-name",
+                    "0:Subtitles",
+                    container_subtitle_path,
+                ]
+            )
 
-        console.print(f"Muxing [yellow]{base_name}[/yellow]...")
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-            console.print(f"Successfully created [green]{output_filename.name}[/green]")
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
             return output_filename
         except subprocess.CalledProcessError as e:
             console.print(f"[bold red]Error muxing {base_name}:[/bold red]")
             console.print(e.stderr)
             return None
         finally:
-            if synced_subtitle_file and synced_subtitle_file.exists():
-                synced_subtitle_file.unlink()
+            if synced_subtitle_file:
+                subtitle_path, _ = synced_subtitle_file
+                if subtitle_path.exists():
+                    subtitle_path.unlink()
 
-    def _prepare_subtitles(self, base_name: str, reference_video_file: Path, lang_code: str) -> Optional[Path]:
-        """Downloads and syncs subtitles, returning the path to the synced SRT file."""
+    def _prepare_subtitles(
+        self, base_name: str, reference_video_file: Path
+    ) -> Optional[tuple[Path, Language]]:
+        """
+        Downloads and syncs subtitles, returning the path to the synced SRT file and its language.
+        """
         console.print("Searching for subtitles...")
-        subtitle_file = self._download_subtitle(reference_video_file, {lang_code})
-        if not subtitle_file:
+        languages = {Language("deu"), Language("eng")}
+        subtitle_result = self._download_subtitle(reference_video_file, languages)
+
+        if not subtitle_result:
             console.print("[yellow]No suitable subtitles found.[/yellow]")
             return None
 
+        subtitle_file, subtitle_lang = subtitle_result
         console.print(f"Found subtitle: [cyan]{subtitle_file.name}[/cyan]")
         synced_subtitle_file = self.base_dir / f"{base_name}.synced.srt"
 
         console.print("Synchronizing subtitle with video audio...")
         try:
-            # We need one of the audio tracks to sync against. We'll temporarily mux just that.
             temp_audio_mux = self.base_dir / f"{base_name}_temp_audio.mkv"
             temp_audio_mux_container = f"/storage/{temp_audio_mux.name}"
             ref_video_container = f"/storage/{reference_video_file.relative_to(self.base_dir)}"
@@ -135,33 +138,41 @@ class Muxer:
             audio_mux_command = [
                 "docker", "exec", self.container_name,
                 "mkvmerge", "-o", temp_audio_mux_container,
-                ref_video_container
+                ref_video_container,
             ]
             subprocess.run(audio_mux_command, check=True, capture_output=True)
 
-            ffsubsync.run(str(temp_audio_mux), "-i", str(subtitle_file), "-o", str(synced_subtitle_file))
+            ffsubsync.run(
+                str(temp_audio_mux),
+                "-i",
+                str(subtitle_file),
+                "-o",
+                str(synced_subtitle_file),
+            )
             console.print("Synchronization complete.")
 
-            return synced_subtitle_file
+            return synced_subtitle_file, subtitle_lang
         except Exception as e:
             console.print(f"[bold red]Failed to sync subtitles:[/bold red] {e}")
             return None
         finally:
-            if subtitle_file.exists():
+            if "subtitle_file" in locals() and subtitle_file.exists():
                 subtitle_file.unlink()
-            if 'temp_audio_mux' in locals() and temp_audio_mux.exists():
+            if "temp_audio_mux" in locals() and temp_audio_mux.exists():
                 temp_audio_mux.unlink()
 
-    def _download_subtitle(self, video_path: Path, languages: set) -> Optional[Path]:
+    def _download_subtitle(
+        self, video_path: Path, languages: set[Language]
+    ) -> Optional[tuple[Path, Language]]:
         """Downloads the best subtitle for a given video file."""
         video = Video.fromname(str(video_path))
         subtitles = subliminal.download_best_subtitles([video], languages)
         if subtitles[video]:
             subtitle = subtitles[video][0]
-            subtitle_path = video_path.with_suffix(".srt")
+            subtitle_path = video_path.with_suffix(f".{subtitle.language.alpha3}.srt")
             with open(subtitle_path, "wb") as f:
                 f.write(subtitle.content)
-            return subtitle_path
+            return subtitle_path, subtitle.language
         return None
 
     @staticmethod
