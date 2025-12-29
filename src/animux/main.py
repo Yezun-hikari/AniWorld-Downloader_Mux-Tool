@@ -5,7 +5,7 @@ import click
 from rich.console import Console
 from rich.progress import Progress
 
-from .core import Muxer, cleanup_source_files, find_episode_files
+from .core import DOCKER_CONTAINER, Muxer, cleanup_source_files, find_episode_files
 from .utils import format_bytes
 
 console = Console()
@@ -20,13 +20,20 @@ console = Console()
     help="The directory to scan for anime episodes.",
 )
 @click.option(
+    "--container",
+    "container_name",
+    default=DOCKER_CONTAINER,
+    show_default=True,
+    help="Name of the running mkvtoolnix Docker container.",
+)
+@click.option(
     "--yes",
     "-y",
     is_flag=True,
     default=False,
     help="Automatically confirm cleanup of source files.",
 )
-def cli(directory: Path, yes: bool):
+def cli(directory: Path, container_name: str, yes: bool):
     """
     A tool to mux multiple versions of anime episodes into a single MKV file.
     """
@@ -39,7 +46,7 @@ def cli(directory: Path, yes: bool):
         console.print("[yellow]No episode files found matching the expected format.[/yellow]")
         return
 
-    muxer = Muxer(base_dir=directory)
+    muxer = Muxer(base_dir=directory, container_name=container_name)
     total_source_size = 0
     total_muxed_size = 0
     all_source_files: List[Path] = []
